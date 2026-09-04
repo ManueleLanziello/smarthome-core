@@ -1,0 +1,12 @@
+{
+  "name": "@smarthome/core",
+  "version": "0.1.0",
+  "description": "Primitive condivise per registry hardware e ruoli logici Smart Home",
+  "type": "module",
+  "exports": "./src/index.js",
+  "scripts": {
+    "test": "node --test"
+  },
+  "license": "UNLICENSED",
+  "private": true
+}
