@@ -4,6 +4,7 @@ const WT200_PROTOCOL_VERSION = '3.4';
 const SCHEDULE_BYTE_LENGTH = 32;
 const SCHEDULE_RECORD_LENGTH = 4;
 const NORMAL_PERIOD_COUNT = 6;
+const OPERATING_MODES = new Set(['home', 'auto']);
 
 function strictBase64Buffer(value) {
   if (typeof value !== 'string' || !/^[A-Za-z0-9+/]*={0,2}$/.test(value) || value.length % 4 !== 0) {
@@ -20,7 +21,7 @@ export function normalizeWt200HeatingActive(rawValue) {
 }
 
 export function normalizeWt200WeekPattern(rawValue) {
-  return rawValue === '1' ? '5+2' : null;
+  return ({ 0: 'Chiuso', 1: '5+2', 2: '6+1', 3: '7' })[rawValue] ?? null;
 }
 
 export function parseWt200Schedule(rawValue) {
@@ -46,6 +47,27 @@ export function parseWt200Schedule(rawValue) {
   };
 }
 
+export function encodeWt200Schedule(rawValue, { normalPeriods, restDayPeriods }) {
+  const buffer = strictBase64Buffer(rawValue);
+  const periods = [...(normalPeriods || []), ...(restDayPeriods || [])];
+  if (!buffer || buffer.length !== SCHEDULE_BYTE_LENGTH || normalPeriods?.length !== 6 || restDayPeriods?.length !== 2) {
+    throw new TypeError('DP105 e fasce 6+2 validi sono obbligatori.');
+  }
+  for (const [index, period] of periods.entries()) {
+    const temperatureRaw = Number(period?.temperature) * 10;
+    if (!Number.isInteger(period?.hour) || period.hour < 0 || period.hour > 23
+      || !Number.isInteger(period?.minute) || period.minute < 0 || period.minute > 59
+      || !Number.isInteger(temperatureRaw) || temperatureRaw < 0 || temperatureRaw > 255) {
+      throw new TypeError(`Fascia DP105 non valida al record ${index + 1}.`);
+    }
+    const offset = index * SCHEDULE_RECORD_LENGTH;
+    buffer[offset] = period.hour;
+    buffer[offset + 1] = period.minute;
+    buffer[offset + 3] = temperatureRaw;
+  }
+  return buffer.toString('base64');
+}
+
 export function buildWt200LanSnapshot({ deviceId, rawDps, scheduleRaw = null, updatedAt = null }) {
   const dps = rawDps && typeof rawDps === 'object' ? structuredClone(rawDps) : {};
   const parsedSchedule = parseWt200Schedule(scheduleRaw);
@@ -67,7 +89,7 @@ export function buildWt200LanSnapshot({ deviceId, rawDps, scheduleRaw = null, up
 }
 
 export class Wt200TuyaLanAdapter {
-  constructor({ deviceId, ip, localKey, createDevice = (options) => new TuyAPI(options), now = () => new Date().toISOString() }) {
+  constructor({ deviceId, ip, localKey, createDevice = (options) => new TuyAPI(options), now = () => new Date().toISOString(), operationTimeoutMs = 3000 }) {
     if (!deviceId || !ip || !localKey) {
       throw new TypeError('deviceId, ip e localKey sono obbligatori per il client LAN WT200.');
     }
@@ -79,11 +101,39 @@ export class Wt200TuyaLanAdapter {
     this.device = null;
     this.rawDps = {};
     this.scheduleRaw = null;
+    this.operationQueue = Promise.resolve();
+    this.operationTimeoutMs = operationTimeoutMs;
+  }
+
+  serialize(operation) {
+    const execute = async () => {
+      let timer;
+      try {
+        return await Promise.race([
+          operation(),
+          new Promise((_, reject) => {
+            timer = setTimeout(() => {
+              const error = new Error('Timeout operazione LAN WT200.');
+              error.code = 'WT200_LAN_TIMEOUT';
+              reject(error);
+            }, this.operationTimeoutMs);
+          }),
+        ]);
+      } catch (error) {
+        if (error?.code === 'WT200_LAN_TIMEOUT') await this.disconnect();
+        throw error;
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+    const next = this.operationQueue.then(execute, execute);
+    this.operationQueue = next.catch(() => undefined);
+    return next;
   }
 
   async connect() {
     if (this.device) return;
-    this.device = this.createDevice({
+    const device = this.createDevice({
       id: this.deviceId,
       key: this.localKey,
       ip: this.ip,
@@ -91,9 +141,20 @@ export class Wt200TuyaLanAdapter {
       issueGetOnConnect: false,
       issueRefreshOnConnect: false,
     });
-    this.device.on('data', (payload) => this.capturePayload(payload));
-    this.device.on('dp-refresh', (payload) => this.capturePayload(payload));
-    await this.device.connect();
+    this.device = device;
+    device.on('data', (payload) => this.capturePayload(payload));
+    device.on('dp-refresh', (payload) => this.capturePayload(payload));
+    const invalidate = () => {
+      if (this.device === device) this.device = null;
+    };
+    device.on('disconnected', invalidate);
+    device.on('error', invalidate);
+    try {
+      await device.connect();
+    } catch (error) {
+      invalidate();
+      throw error;
+    }
   }
 
   capturePayload(payload) {
@@ -104,14 +165,59 @@ export class Wt200TuyaLanAdapter {
   }
 
   async read() {
-    await this.connect();
-    const payload = await this.device.get({ schema: true });
-    this.capturePayload(payload);
-    return buildWt200LanSnapshot({
-      deviceId: this.deviceId,
-      rawDps: this.rawDps,
-      scheduleRaw: this.scheduleRaw,
-      updatedAt: this.now(),
+    return this.serialize(async () => {
+      await this.connect();
+      const payload = await this.device.get({ schema: true });
+      this.capturePayload(payload);
+      return buildWt200LanSnapshot({
+        deviceId: this.deviceId,
+        rawDps: this.rawDps,
+        scheduleRaw: this.scheduleRaw,
+        updatedAt: this.now(),
+      });
+    });
+  }
+
+  async writeSchedule({ normalPeriods, restDayPeriods, raw = this.scheduleRaw }) {
+    return this.serialize(async () => {
+      await this.connect();
+      const scheduleRaw = encodeWt200Schedule(raw, { normalPeriods, restDayPeriods });
+      await this.device.set({ dps: 105, set: scheduleRaw });
+      this.scheduleRaw = scheduleRaw;
+      this.rawDps['105'] = scheduleRaw;
+      // WT200 can close the socket after a successful DP105 write. Reconnect once, only when that close was observed.
+      if (!this.device) await this.connect();
+      return buildWt200LanSnapshot({
+        deviceId: this.deviceId,
+        rawDps: this.rawDps,
+        scheduleRaw,
+        updatedAt: this.now(),
+      });
+    });
+  }
+
+  async setOperatingMode(mode) {
+    if (!OPERATING_MODES.has(mode)) throw new TypeError('Modalita WT200 non consentita.');
+    return this.serialize(async () => {
+      await this.connect();
+      await this.device.set({ dps: 4, set: mode });
+      this.rawDps['4'] = mode;
+      if (!this.device) await this.connect();
+      return buildWt200LanSnapshot({ deviceId: this.deviceId, rawDps: this.rawDps, scheduleRaw: this.scheduleRaw, updatedAt: this.now() });
+    });
+  }
+
+  async setSetpointTemperature(temperature) {
+    const raw = Number(temperature) * 10;
+    if (!Number.isFinite(temperature) || temperature < 0 || temperature > 30 || !Number.isInteger(raw) || raw % 5 !== 0) {
+      throw new TypeError('Setpoint WT200 non valido.');
+    }
+    return this.serialize(async () => {
+      await this.connect();
+      await this.device.set({ dps: 2, set: raw });
+      this.rawDps['2'] = raw;
+      if (!this.device) await this.connect();
+      return buildWt200LanSnapshot({ deviceId: this.deviceId, rawDps: this.rawDps, scheduleRaw: this.scheduleRaw, updatedAt: this.now() });
     });
   }
 
