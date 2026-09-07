@@ -8,5 +8,8 @@
     "test": "node --test"
   },
   "license": "UNLICENSED",
-  "private": true
+  "private": true,
+  "dependencies": {
+    "tuyapi": "7.7.0"
+  }
 }
