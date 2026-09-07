@@ -23,3 +23,8 @@ export {
   buildDewinMeasurementSnapshot,
   parseTuyaDatapoints,
 } from './devices/tuya/dewin/dewin-adapter.js';
+export {
+  Wt200TuyaAdapter,
+  buildWt200Snapshot,
+  normalizeWt200Mode,
+} from './devices/tuya/wt200/wt200-adapter.js';
