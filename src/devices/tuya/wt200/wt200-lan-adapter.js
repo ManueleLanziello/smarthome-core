@@ -5,6 +5,13 @@ const SCHEDULE_BYTE_LENGTH = 32;
 const SCHEDULE_RECORD_LENGTH = 4;
 const NORMAL_PERIOD_COUNT = 6;
 const OPERATING_MODES = new Set(['home', 'auto']);
+const WEEK_PATTERN_BY_RAW = Object.freeze({ 0: 'Chiuso', 1: '5+2', 2: '6+1', 3: '7' });
+const RAW_BY_WEEK_PATTERN = Object.freeze({ '5+2': '1', '6+1': '2', 7: '3' });
+const DAYS_BY_WEEK_PATTERN = Object.freeze({
+  '5+2': Object.freeze({ normalPeriods: [1, 2, 3, 4, 5], restDayPeriods: [6, 0] }),
+  '6+1': Object.freeze({ normalPeriods: [1, 2, 3, 4, 5, 6], restDayPeriods: [0] }),
+  7: Object.freeze({ normalPeriods: [1, 2, 3, 4, 5, 6, 0], restDayPeriods: [] }),
+});
 
 function strictBase64Buffer(value) {
   if (typeof value !== 'string' || !/^[A-Za-z0-9+/]*={0,2}$/.test(value) || value.length % 4 !== 0) {
@@ -21,10 +28,25 @@ export function normalizeWt200HeatingActive(rawValue) {
 }
 
 export function normalizeWt200WeekPattern(rawValue) {
-  return ({ 0: 'Chiuso', 1: '5+2', 2: '6+1', 3: '7' })[rawValue] ?? null;
+  return WEEK_PATTERN_BY_RAW[rawValue] ?? null;
 }
 
-export function parseWt200Schedule(rawValue) {
+export function encodeWt200WeekPattern(weekPattern) {
+  const raw = RAW_BY_WEEK_PATTERN[weekPattern];
+  if (!raw) throw new TypeError('Modalita settimanale WT200 non consentita.');
+  return raw;
+}
+
+export function wt200ScheduleGroups(weekPattern, { normalPeriods, restDayPeriods }) {
+  const days = DAYS_BY_WEEK_PATTERN[weekPattern];
+  if (!days) return [];
+  return [
+    { key: 'normalPeriods', days: [...days.normalPeriods], periods: normalPeriods },
+    ...(days.restDayPeriods.length ? [{ key: 'restDayPeriods', days: [...days.restDayPeriods], periods: restDayPeriods }] : []),
+  ];
+}
+
+export function parseWt200Schedule(rawValue, weekPatternRaw = null) {
   const buffer = strictBase64Buffer(rawValue);
   if (!buffer || buffer.length !== SCHEDULE_BYTE_LENGTH) return null;
 
@@ -41,18 +63,25 @@ export function parseWt200Schedule(rawValue) {
     });
   }
 
-  return {
+  const schedule = {
     normalPeriods: periods.slice(0, NORMAL_PERIOD_COUNT),
     restDayPeriods: periods.slice(NORMAL_PERIOD_COUNT),
   };
+  const weekPattern = normalizeWt200WeekPattern(weekPatternRaw);
+  return weekPattern && weekPattern !== 'Chiuso'
+    ? { ...schedule, groups: wt200ScheduleGroups(weekPattern, schedule) }
+    : schedule;
 }
 
-export function encodeWt200Schedule(rawValue, { normalPeriods, restDayPeriods }) {
+export function encodeWt200Schedule(rawValue, { weekPattern = null, normalPeriods, restDayPeriods }) {
   const buffer = strictBase64Buffer(rawValue);
-  const periods = [...(normalPeriods || []), ...(restDayPeriods || [])];
-  if (!buffer || buffer.length !== SCHEDULE_BYTE_LENGTH || normalPeriods?.length !== 6 || restDayPeriods?.length !== 2) {
+  const parsed = parseWt200Schedule(rawValue);
+  const effectiveRestPeriods = weekPattern === '7' && restDayPeriods === undefined ? parsed?.restDayPeriods : restDayPeriods;
+  const periods = [...(normalPeriods || []), ...(effectiveRestPeriods || [])];
+  if (!buffer || buffer.length !== SCHEDULE_BYTE_LENGTH || normalPeriods?.length !== 6 || effectiveRestPeriods?.length !== 2) {
     throw new TypeError('DP105 e fasce 6+2 validi sono obbligatori.');
   }
+  if (weekPattern !== null) encodeWt200WeekPattern(weekPattern);
   for (const [index, period] of periods.entries()) {
     const temperatureRaw = Number(period?.temperature) * 10;
     if (!Number.isInteger(period?.hour) || period.hour < 0 || period.hour > 23
@@ -70,7 +99,7 @@ export function encodeWt200Schedule(rawValue, { normalPeriods, restDayPeriods })
 
 export function buildWt200LanSnapshot({ deviceId, rawDps, scheduleRaw = null, updatedAt = null }) {
   const dps = rawDps && typeof rawDps === 'object' ? structuredClone(rawDps) : {};
-  const parsedSchedule = parseWt200Schedule(scheduleRaw);
+  const parsedSchedule = parseWt200Schedule(scheduleRaw, dps['107']);
 
   return {
     deviceId: deviceId ?? null,
@@ -178,11 +207,16 @@ export class Wt200TuyaLanAdapter {
     });
   }
 
-  async writeSchedule({ normalPeriods, restDayPeriods, raw = this.scheduleRaw }) {
+  async writeSchedule({ weekPattern = normalizeWt200WeekPattern(this.rawDps['107']), normalPeriods, restDayPeriods, raw = this.scheduleRaw }) {
     return this.serialize(async () => {
       await this.connect();
-      const scheduleRaw = encodeWt200Schedule(raw, { normalPeriods, restDayPeriods });
-      await this.device.set({ dps: 105, set: scheduleRaw });
+      const scheduleRaw = encodeWt200Schedule(raw, { weekPattern, normalPeriods, restDayPeriods });
+      const response = await this.device.set({ dps: 105, set: scheduleRaw });
+      if (response?.dps?.['105'] !== undefined && response.dps['105'] !== scheduleRaw) {
+        const error = new Error('Il WT200 non ha confermato la programmazione richiesta.');
+        error.code = 'SCHEDULE_NOT_CONFIRMED';
+        throw error;
+      }
       this.scheduleRaw = scheduleRaw;
       this.rawDps['105'] = scheduleRaw;
       // WT200 can close the socket after a successful DP105 write. Reconnect once, only when that close was observed.
@@ -193,6 +227,30 @@ export class Wt200TuyaLanAdapter {
         scheduleRaw,
         updatedAt: this.now(),
       });
+    });
+  }
+
+  async setWeekPattern(weekPattern) {
+    const raw = encodeWt200WeekPattern(weekPattern);
+    return this.serialize(async () => {
+      await this.connect();
+      const response = await this.device.set({ dps: 107, set: raw });
+      const confirmed = response?.dps?.['107'];
+      if (confirmed !== undefined && confirmed !== raw) {
+        const error = new Error('Il WT200 non ha confermato la modalita settimanale richiesta.');
+        error.code = 'WEEK_PATTERN_NOT_CONFIRMED';
+        throw error;
+      }
+      this.rawDps['107'] = raw;
+      if (!this.device) await this.connect();
+      const status = await this.device.get({ schema: true });
+      this.capturePayload(status);
+      if (this.rawDps['107'] !== raw) {
+        const error = new Error('Il WT200 non ha confermato la modalita settimanale richiesta.');
+        error.code = 'WEEK_PATTERN_NOT_CONFIRMED';
+        throw error;
+      }
+      return buildWt200LanSnapshot({ deviceId: this.deviceId, rawDps: this.rawDps, scheduleRaw: this.scheduleRaw, updatedAt: this.now() });
     });
   }
 

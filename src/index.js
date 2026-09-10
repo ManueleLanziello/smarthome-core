@@ -31,8 +31,10 @@ export {
 export {
   Wt200TuyaLanAdapter,
   buildWt200LanSnapshot,
+  encodeWt200WeekPattern,
   normalizeWt200HeatingActive,
   normalizeWt200WeekPattern,
   encodeWt200Schedule,
   parseWt200Schedule,
+  wt200ScheduleGroups,
 } from './devices/tuya/wt200/wt200-lan-adapter.js';

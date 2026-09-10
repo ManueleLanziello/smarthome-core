@@ -1,3 +1,9 @@
+import {
+  buildWt200LanSnapshot,
+  encodeWt200Schedule,
+  encodeWt200WeekPattern,
+} from './wt200-lan-adapter.js';
+
 const MODE_BY_RAW_VALUE = Object.freeze({
   home: 'manual',
   auto: 'auto',
@@ -57,7 +63,63 @@ export class Wt200TuyaAdapter {
   }
 
   async read() {
-    const { device, statuses, specification } = await this.client.readDevice();
-    return buildWt200Snapshot({ device, statuses, specification, updatedAt: this.now() });
+    const [{ device, statuses, specification }, programming] = await Promise.all([
+      this.client.readDevice(),
+      this.readProgramming().catch(() => null),
+    ]);
+    return {
+      ...buildWt200Snapshot({ device, statuses, specification, updatedAt: this.now() }),
+      ...(programming?.schedule ? { schedule: programming.schedule } : {}),
+    };
+  }
+
+  async readProgramming() {
+    if (typeof this.client.readShadowProperties !== 'function') return null;
+    const properties = await this.client.readShadowProperties();
+    const byCode = new Map(properties.map((property) => [property.code, property.value]));
+    return buildWt200LanSnapshot({
+      deviceId: this.client.deviceId,
+      rawDps: { 107: byCode.get('work_days') },
+      scheduleRaw: byCode.get('week_program3'),
+      updatedAt: this.now(),
+    });
+  }
+
+  async confirmProgramming(predicate) {
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const snapshot = await this.readProgramming();
+      if (predicate(snapshot)) return snapshot;
+      if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    return null;
+  }
+
+  async writeSchedule({ weekPattern, normalPeriods, restDayPeriods, raw }) {
+    if (typeof this.client.issueProperties !== 'function') throw new TypeError('Scrittura Tuya Cloud non disponibile.');
+    const current = await this.readProgramming();
+    const sourceRaw = current?.schedule?.raw || raw;
+    const activePattern = weekPattern || current?.schedule?.weekPattern;
+    const scheduleRaw = encodeWt200Schedule(sourceRaw, { weekPattern: activePattern, normalPeriods, restDayPeriods });
+    await this.client.issueProperties({ week_program3: scheduleRaw });
+    const confirmed = await this.confirmProgramming((snapshot) => snapshot?.schedule?.raw === scheduleRaw);
+    if (!confirmed) {
+      const error = new Error('Il WT200 non ha confermato la programmazione richiesta.');
+      error.code = 'SCHEDULE_NOT_CONFIRMED';
+      throw error;
+    }
+    return confirmed;
+  }
+
+  async setWeekPattern(weekPattern) {
+    if (typeof this.client.issueProperties !== 'function') throw new TypeError('Scrittura Tuya Cloud non disponibile.');
+    const raw = encodeWt200WeekPattern(weekPattern);
+    await this.client.issueProperties({ work_days: raw });
+    const confirmed = await this.confirmProgramming((snapshot) => snapshot?.schedule?.weekPattern === weekPattern);
+    if (!confirmed) {
+      const error = new Error('Il WT200 non ha confermato la modalita settimanale richiesta.');
+      error.code = 'WEEK_PATTERN_NOT_CONFIRMED';
+      throw error;
+    }
+    return confirmed;
   }
 }

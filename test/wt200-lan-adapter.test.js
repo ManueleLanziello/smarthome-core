@@ -3,10 +3,12 @@ import test from 'node:test';
 import {
   Wt200TuyaLanAdapter,
   buildWt200LanSnapshot,
+  encodeWt200WeekPattern,
   normalizeWt200HeatingActive,
   normalizeWt200WeekPattern,
   encodeWt200Schedule,
   parseWt200Schedule,
+  wt200ScheduleGroups,
 } from '../src/index.js';
 
 const SCHEDULE_RAW = 'BgAAFAgAAA8LEgAPDRwADxEAABYWAAAPBgAAFBYAAA8=';
@@ -41,6 +43,26 @@ test('conserva DP107 raw e normalizza 1 come schema 5+2', () => {
   assert.equal(snapshot.schedule.raw, SCHEDULE_RAW);
 });
 
+test('mappa DP107 soltanto sulle tre modalita settimanali consentite', () => {
+  assert.deepEqual(['0', '1', '2', '3'].map(normalizeWt200WeekPattern), ['Chiuso', '5+2', '6+1', '7']);
+  assert.equal(encodeWt200WeekPattern('5+2'), '1');
+  assert.equal(encodeWt200WeekPattern('6+1'), '2');
+  assert.equal(encodeWt200WeekPattern('7'), '3');
+  assert.throws(() => encodeWt200WeekPattern('Chiuso'), /non consentita/);
+});
+
+test('interpreta gli stessi otto record DP105 secondo 5+2, 6+1 e 7', () => {
+  const fiveTwo = parseWt200Schedule(SCHEDULE_RAW, '1');
+  const sixOne = parseWt200Schedule(SCHEDULE_RAW, '2');
+  const daily = parseWt200Schedule(SCHEDULE_RAW, '3');
+  assert.deepEqual(fiveTwo.groups.map((group) => group.days), [[1, 2, 3, 4, 5], [6, 0]]);
+  assert.deepEqual(sixOne.groups.map((group) => group.days), [[1, 2, 3, 4, 5, 6], [0]]);
+  assert.deepEqual(daily.groups.map((group) => group.days), [[1, 2, 3, 4, 5, 6, 0]]);
+  assert.equal(daily.groups[0].periods.length, 6);
+  assert.equal(daily.restDayPeriods.length, 2);
+  assert.deepEqual(wt200ScheduleGroups('7', daily).map((group) => group.key), ['normalPeriods']);
+});
+
 test('gestisce in sicurezza un payload DP105 non valido', () => {
   assert.equal(parseWt200Schedule('not-base64'), null);
   assert.equal(buildWt200LanSnapshot({ rawDps: {}, scheduleRaw: 'not-base64' }).schedule, null);
@@ -59,6 +81,28 @@ test('encoda DP105 preservando byte3 e record invariati', () => {
   assert.equal(result[3], 25);
   assert.deepEqual([...result.slice(4)], [...original.slice(4)]);
   assert.throws(() => encodeWt200Schedule(SCHEDULE_RAW, { normalPeriods: [], restDayPeriods: [] }));
+});
+
+test('round-trip DP105 in modalita 7 preserva i due record inattivi', () => {
+  const parsed = parseWt200Schedule(SCHEDULE_RAW, '3');
+  const changedNormal = [{ ...parsed.normalPeriods[0], minute: 5 }, ...parsed.normalPeriods.slice(1)];
+  const encoded = encodeWt200Schedule(SCHEDULE_RAW, { weekPattern: '7', normalPeriods: changedNormal });
+  const roundTrip = parseWt200Schedule(encoded, '3');
+  assert.equal(roundTrip.normalPeriods[0].minute, 5);
+  assert.deepEqual(roundTrip.restDayPeriods, parsed.restDayPeriods);
+});
+
+test('setWeekPattern accetta solo DP107 1/2/3 e rilegge lo stato', async () => {
+  const writes = [];
+  const fake = {
+    on() {}, async connect() {}, async disconnect() {},
+    async set(value) { writes.push(value); return { dps: { 107: value.set } }; },
+    async get() { return { dps: { 107: writes.at(-1).set, 105: SCHEDULE_RAW } }; },
+  };
+  const adapter = new Wt200TuyaLanAdapter({ deviceId: 'wt200-1', ip: '127.0.0.1', localKey: 'test', createDevice: () => fake });
+  for (const pattern of ['5+2', '6+1', '7']) await adapter.setWeekPattern(pattern);
+  assert.deepEqual(writes, [{ dps: 107, set: '1' }, { dps: 107, set: '2' }, { dps: 107, set: '3' }]);
+  await assert.rejects(adapter.setWeekPattern('Chiuso'), /non consentita/);
 });
 
 test('mantiene in memoria l ultimo DP105 ricevuto dagli eventi read-only', async () => {

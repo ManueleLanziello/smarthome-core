@@ -11,10 +11,11 @@ export class TuyaCloudError extends Error {
   }
 }
 
-function signRequest({ clientId, clientSecret, accessToken = '', requestPath, now, randomUUID }) {
+function signRequest({ clientId, clientSecret, accessToken = '', requestPath, method = 'GET', body = '', now, randomUUID }) {
   const timestamp = String(now());
   const nonce = randomUUID().replaceAll('-', '');
-  const stringToSign = `GET\n${EMPTY_BODY_SHA256}\n\n${requestPath}`;
+  const contentHash = body ? crypto.createHash('sha256').update(body).digest('hex') : EMPTY_BODY_SHA256;
+  const stringToSign = `${method}\n${contentHash}\n\n${requestPath}`;
   const message = `${clientId}${accessToken}${timestamp}${nonce}${stringToSign}`;
   const sign = crypto.createHmac('sha256', clientSecret).update(message).digest('hex').toUpperCase();
   return {
@@ -53,19 +54,25 @@ export class TuyaCloudClient {
     this.tokenExpiresAt = 0;
   }
 
-  async request(requestPath, accessToken = '') {
+  async request(requestPath, accessToken = '', { method = 'GET', body = '' } = {}) {
     let response;
     try {
       response = await this.fetchImpl(`${this.baseUrl}${requestPath}`, {
-        method: 'GET',
-        headers: signRequest({
+        method,
+        headers: {
+          ...signRequest({
           clientId: this.clientId,
           clientSecret: this.clientSecret,
-          accessToken,
-          requestPath,
-          now: this.now,
-          randomUUID: this.randomUUID,
-        }),
+            accessToken,
+            requestPath,
+            method,
+            body,
+            now: this.now,
+            randomUUID: this.randomUUID,
+          }),
+          ...(body ? { 'Content-Type': 'application/json' } : {}),
+        },
+        ...(body ? { body } : {}),
         signal: AbortSignal.timeout(this.timeoutMs),
       });
     } catch (error) { throw error; }
@@ -102,5 +109,22 @@ export class TuyaCloudClient {
       this.request(`/v1.0/iot-03/devices/${id}/status`, token),
     ]);
     return { device, specification, statuses };
+  }
+
+  async readShadowProperties() {
+    const token = await this.accessToken();
+    const id = encodeURIComponent(this.deviceId);
+    const result = await this.request(`/v2.0/cloud/thing/${id}/shadow/properties`, token);
+    return Array.isArray(result?.properties) ? result.properties : [];
+  }
+
+  async issueProperties(properties) {
+    if (!properties || typeof properties !== 'object' || Array.isArray(properties)) {
+      throw new TuyaCloudError('Proprieta Tuya non valide', 'INVALID_PROPERTIES');
+    }
+    const token = await this.accessToken();
+    const id = encodeURIComponent(this.deviceId);
+    const body = JSON.stringify({ properties: JSON.stringify(properties) });
+    return this.request(`/v2.0/cloud/thing/${id}/shadow/properties/issue`, token, { method: 'POST', body });
   }
 }
