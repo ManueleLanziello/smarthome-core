@@ -38,3 +38,12 @@ export {
   parseWt200Schedule,
   wt200ScheduleGroups,
 } from './devices/tuya/wt200/wt200-lan-adapter.js';
+export {
+  CAMERA_SAFETY_TIMEOUT_MS,
+  CameraControlError,
+  CameraManager,
+  defaultCameraPython,
+} from './devices/tapo/c410/camera-manager.js';
+export { c410ProbePath, c410WorkerPath } from './devices/tapo/c410/paths.js';
+export { TapoCameraVerificationError, verifyTapoC410 } from './devices/tapo/c410/verifier.js';
+export { RoleRuntimeManager } from './runtime/role-runtime-manager.js';

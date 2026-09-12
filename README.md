@@ -35,7 +35,11 @@ I dati di identità/configurazione devono restare privi di credenziali; le crede
 3. **Step C:** fare usare a Pond-Control l'integrazione dal Core.
 4. **Step D:** fare usare la stessa integrazione a Home-Control.
 
-Nessuno degli step B/C/D è implementato qui.
+Lo step B è implementato per Tapo C410; le app restano responsabili di registry, ruoli, credenziali, HTTP e UI.
+
+## Tapo C410
+
+Il Core espone il manager tecnico C410, il probe read-only e il lifecycle generico dei runtime. L'app chiamante inietta IP, credenziali, interprete Python e directory di output: il Core non legge `.env`, non assegna ruoli e non espone HTTP.
 
 ## Adapter Dewin / Tuya read-only
 
