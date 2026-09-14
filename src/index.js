@@ -39,6 +39,10 @@ export {
   wt200ScheduleGroups,
 } from './devices/tuya/wt200/wt200-lan-adapter.js';
 export {
+  CiarraTuyaLanAdapter,
+  buildCiarraLanState,
+} from './devices/tuya/ciarra/ciarra-lan-adapter.js';
+export {
   CAMERA_SAFETY_TIMEOUT_MS,
   CameraControlError,
   CameraManager,
