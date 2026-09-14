@@ -27,6 +27,16 @@ export function normalizeWt200HeatingActive(rawValue) {
   return null;
 }
 
+export function normalizeWt200LanTemperature(rawValue) {
+  return typeof rawValue === 'number' && Number.isFinite(rawValue) ? rawValue / 10 : null;
+}
+
+export function normalizeWt200LanMode(rawValue) {
+  if (rawValue === 'home') return 'manual';
+  if (rawValue === 'auto') return 'auto';
+  return typeof rawValue === 'string' ? rawValue : null;
+}
+
 export function normalizeWt200WeekPattern(rawValue) {
   return WEEK_PATTERN_BY_RAW[rawValue] ?? null;
 }
@@ -103,6 +113,11 @@ export function buildWt200LanSnapshot({ deviceId, rawDps, scheduleRaw = null, up
 
   return {
     deviceId: deviceId ?? null,
+    thermostat: {
+      currentTemperature: normalizeWt200LanTemperature(dps['3']),
+      setpointTemperature: normalizeWt200LanTemperature(dps['2']),
+      mode: normalizeWt200LanMode(dps['4']),
+    },
     heatingActive: normalizeWt200HeatingActive(dps['5']),
     rawDps: dps,
     schedule: parsedSchedule

@@ -30,13 +30,14 @@ test('parsa il payload DP105 reale in sei fasce normali e due di riposo', () => 
   assert.equal(schedule.normalPeriods[4].temperature, 2.2);
 });
 
-test('conserva DP107 raw e normalizza 1 come schema 5+2', () => {
+test('normalizza i DPS LAN di termostato e conserva DP107 raw', () => {
   const snapshot = buildWt200LanSnapshot({
     deviceId: 'wt200-1',
-    rawDps: { 5: '1', 107: '1' },
+    rawDps: { 2: 55, 3: 259, 4: 'home', 5: '1', 107: '1' },
     scheduleRaw: SCHEDULE_RAW,
   });
   assert.equal(normalizeWt200WeekPattern('1'), '5+2');
+  assert.deepEqual(snapshot.thermostat, { currentTemperature: 25.9, setpointTemperature: 5.5, mode: 'manual' });
   assert.equal(snapshot.heatingActive, true);
   assert.equal(snapshot.schedule.weekPattern, '5+2');
   assert.equal(snapshot.schedule.weekPatternRaw, '1');
