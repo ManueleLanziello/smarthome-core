@@ -288,8 +288,9 @@ export class Wt200TuyaLanAdapter {
     return this.serialize(async () => {
       await this.connect();
       await this.device.set({ dps: 2, set: raw });
-      this.rawDps['2'] = raw;
       if (!this.device) await this.connect();
+      const status = await this.device.get({ schema: true });
+      this.capturePayload(status);
       return buildWt200LanSnapshot({ deviceId: this.deviceId, rawDps: this.rawDps, scheduleRaw: this.scheduleRaw, updatedAt: this.now() });
     });
   }

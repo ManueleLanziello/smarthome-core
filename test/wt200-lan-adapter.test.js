@@ -170,11 +170,27 @@ test('setOperatingMode scrive solo DP4 con home o auto', async () => {
 
 test('setSetpointTemperature converte x10 e scrive solo DP2', async () => {
   const writes = [];
-  const fake = { on() {}, async connect() {}, async disconnect() {}, async set(value) { writes.push(value); } };
+  let reads = 0;
+  const fake = {
+    on() {}, async connect() {}, async disconnect() {}, async set(value) { writes.push(value); },
+    async get() { reads += 1; return { dps: { 2: writes.at(-1).set, 3: 200, 4: 'home', 5: '0' } }; },
+  };
   const adapter = new Wt200TuyaLanAdapter({ deviceId: 'wt200-1', ip: '127.0.0.1', localKey: 'test', createDevice: () => fake });
   for (const [value, raw] of [[0, 0], [20, 200], [20.5, 205], [30, 300]]) await adapter.setSetpointTemperature(value), assert.deepEqual(writes.at(-1), { dps: 2, set: raw });
+  assert.equal(reads, 4);
   await assert.rejects(adapter.setSetpointTemperature(20.2));
   await assert.rejects(adapter.setSetpointTemperature(30.5));
+});
+
+test('setpoint non usa il valore scritto in memoria quando il read-back non restituisce DP2', async () => {
+  const fake = {
+    on() {}, async connect() {}, async disconnect() {}, async set() {},
+    async get() { return { dps: { 3: 200, 4: 'home', 5: '1' } }; },
+  };
+  const adapter = new Wt200TuyaLanAdapter({ deviceId: 'wt200-1', ip: '127.0.0.1', localKey: 'test', createDevice: () => fake });
+  const snapshot = await adapter.setSetpointTemperature(21);
+  assert.equal(snapshot.thermostat.setpointTemperature, null);
+  assert.equal(snapshot.heatingActive, true);
 });
 
 test('dopo un write e disconnect riconnette una sola volta con un solo nuovo client', async () => {
