@@ -208,10 +208,16 @@ export class Wt200TuyaLanAdapter {
     if (typeof dps['105'] === 'string') this.scheduleRaw = dps['105'];
   }
 
-  async read() {
+  async read({ requiredDps = [] } = {}) {
     return this.serialize(async () => {
       await this.connect();
       const payload = await this.device.get({ schema: true });
+      const dps = payload?.dps;
+      if (requiredDps.some(dp => !Object.hasOwn(dps || {}, String(dp)))) {
+        const error = new Error('Read-back LAN WT200 incompleto.');
+        error.code = 'WT200_LAN_INCOMPLETE_STATE';
+        throw error;
+      }
       this.capturePayload(payload);
       return buildWt200LanSnapshot({
         deviceId: this.deviceId,
@@ -274,9 +280,7 @@ export class Wt200TuyaLanAdapter {
     return this.serialize(async () => {
       await this.connect();
       await this.device.set({ dps: 4, set: mode });
-      this.rawDps['4'] = mode;
       if (!this.device) await this.connect();
-      return buildWt200LanSnapshot({ deviceId: this.deviceId, rawDps: this.rawDps, scheduleRaw: this.scheduleRaw, updatedAt: this.now() });
     });
   }
 

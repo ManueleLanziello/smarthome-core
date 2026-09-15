@@ -165,6 +165,7 @@ test('setOperatingMode scrive solo DP4 con home o auto', async () => {
   await adapter.setOperatingMode('home');
   await adapter.setOperatingMode('auto');
   assert.deepEqual(writes, [{ dps: 4, set: 'home' }, { dps: 4, set: 'auto' }]);
+  assert.equal(adapter.rawDps['4'], undefined);
   await assert.rejects(adapter.setOperatingMode('temporary'), /non consentita/);
 });
 
@@ -192,6 +193,7 @@ test('setpoint non usa il valore scritto in memoria quando il read-back non rest
   assert.equal(reads, 1);
   assert.equal(snapshot.thermostat.setpointTemperature, null);
   assert.equal(snapshot.heatingActive, true);
+  await assert.rejects(adapter.read({ requiredDps: [2, 3, 4, 5] }), error => error.code === 'WT200_LAN_INCOMPLETE_STATE');
 });
 
 test('dopo un write e disconnect riconnette una sola volta con un solo nuovo client', async () => {
