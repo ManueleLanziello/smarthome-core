@@ -144,6 +144,31 @@ test('mantiene in memoria l ultimo DP105 ricevuto dagli eventi read-only', async
   await adapter.disconnect();
 });
 
+test('pubblica immediatamente lo stato LAN reale quando data o dp-refresh contiene DP5', async () => {
+  const listeners = new Map();
+  const published = [];
+  const fakeDevice = {
+    on(event, listener) { listeners.set(event, listener); },
+    async connect() {},
+    async disconnect() {},
+  };
+  const adapter = new Wt200TuyaLanAdapter({
+    deviceId: 'wt200-1', ip: '192.168.1.19', localKey: 'test-key', createDevice: () => fakeDevice,
+  });
+  adapter.subscribeState((snapshot, metadata) => published.push({ snapshot, metadata }));
+  await adapter.connect();
+
+  listeners.get('data')({ dps: { 2: 220, 3: 259, 4: 'home', 5: '1' } });
+  listeners.get('dp-refresh')({ dps: { 5: '0' } });
+
+  assert.equal(published.length, 2);
+  assert.equal(published[0].snapshot.heatingActive, true);
+  assert.equal(published[0].snapshot.thermostat.setpointTemperature, 22);
+  assert.equal(published[1].snapshot.heatingActive, false);
+  assert.deepEqual(published[1].metadata.changedDps, { 5: '0' });
+  assert.equal(adapter.rawDps['5'], '0');
+});
+
 test('writeSchedule invia esclusivamente DP105 serializzato', async () => {
   const writes = [];
   const fakeDevice = {

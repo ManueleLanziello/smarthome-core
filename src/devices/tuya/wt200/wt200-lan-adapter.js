@@ -145,6 +145,7 @@ export class Wt200TuyaLanAdapter {
     this.device = null;
     this.rawDps = {};
     this.scheduleRaw = null;
+    this.stateListeners = new Set();
     this.operationQueue = Promise.resolve();
     this.operationTimeoutMs = operationTimeoutMs;
   }
@@ -186,8 +187,8 @@ export class Wt200TuyaLanAdapter {
       issueRefreshOnConnect: false,
     });
     this.device = device;
-    device.on('data', (payload) => this.capturePayload(payload));
-    device.on('dp-refresh', (payload) => this.capturePayload(payload));
+    device.on('data', (payload) => this.capturePayload(payload, { notify: true }));
+    device.on('dp-refresh', (payload) => this.capturePayload(payload, { notify: true }));
     const invalidate = () => {
       if (this.device === device) this.device = null;
     };
@@ -201,11 +202,27 @@ export class Wt200TuyaLanAdapter {
     }
   }
 
-  capturePayload(payload) {
+  subscribeState(listener) {
+    this.stateListeners.add(listener);
+    return () => this.stateListeners.delete(listener);
+  }
+
+  capturePayload(payload, { notify = false } = {}) {
     const dps = payload?.dps;
     if (!dps || typeof dps !== 'object') return;
     Object.assign(this.rawDps, dps);
     if (typeof dps['105'] === 'string') this.scheduleRaw = dps['105'];
+    if (notify && Object.hasOwn(dps, '5')) {
+      const snapshot = buildWt200LanSnapshot({
+        deviceId: this.deviceId,
+        rawDps: this.rawDps,
+        scheduleRaw: this.scheduleRaw,
+        updatedAt: this.now(),
+      });
+      for (const listener of this.stateListeners) {
+        try { listener(snapshot, { changedDps: structuredClone(dps) }); } catch { /* A consumer must not break LAN capture. */ }
+      }
+    }
   }
 
   async read({ requiredDps = [] } = {}) {
