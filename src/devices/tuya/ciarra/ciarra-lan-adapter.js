@@ -76,6 +76,10 @@ export class CiarraTuyaLanAdapter {
       issueGetOnConnect: false,
       issueRefreshOnConnect: false,
     });
+    // TuyAPI emits socket failures before rejecting the active operation.
+    // Consuming the transport event prevents EventEmitter from terminating
+    // the host process; the operation rejection still drives offline state.
+    device.on?.('error', () => {});
     try {
       await this.#withTimeout(device.connect());
       return await this.#withTimeout(operation(device));

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import test from 'node:test';
 import { CiarraTuyaLanAdapter, buildCiarraLanState } from '../src/index.js';
 
@@ -51,6 +52,38 @@ test('GET usa Tuya 3.4, legge i DPS e chiude la sessione', async () => {
   assert.equal(fixture.devices[0].options.version, '3.4');
   assert.equal(fixture.devices[0].options.issueGetOnConnect, false);
   assert.equal(fixture.devices[0].disconnected, true);
+});
+
+test('ECONNRESET asincrono viene intercettato e una lettura successiva puo riprovare', async () => {
+  let creations = 0;
+  const devices = [];
+  const adapter = new CiarraTuyaLanAdapter({
+    deviceId: 'hood-test', ip: '127.0.0.1', localKey: 'fixture-key',
+    createDevice() {
+      const index = creations++;
+      const device = new EventEmitter();
+      device.disconnected = false;
+      device.disconnect = async () => { device.disconnected = true; };
+      device.get = async () => ({ dps: { 1: false, 2: '2', 12: '0', 104: 'Turn_off' } });
+      device.connect = async () => {
+        if (index === 0) {
+          const error = new Error('read ECONNRESET');
+          error.code = 'ECONNRESET';
+          device.emit('error', error);
+          throw error;
+        }
+      };
+      devices.push(device);
+      return device;
+    },
+  });
+
+  await assert.rejects(adapter.getState(), error => error.code === 'ECONNRESET');
+  assert.equal(devices[0].disconnected, true);
+  const state = await adapter.getState();
+  assert.equal(state.online, true);
+  assert.equal(state.fanSpeed, 2);
+  assert.equal(devices.length, 2);
 });
 
 test('power, velocita e luce scrivono solo DP1/DP2/DP104 e verificano con una nuova sessione dopo 5 secondi', async () => {
