@@ -51,3 +51,4 @@ export {
 export { c410ProbePath, c410WorkerPath } from './devices/tapo/c410/paths.js';
 export { TapoCameraVerificationError, verifyTapoC410 } from './devices/tapo/c410/verifier.js';
 export { RoleRuntimeManager } from './runtime/role-runtime-manager.js';
+export { normalizeSnzb02pPayload } from './devices/zigbee/sonoff/snzb-02p-mqtt-adapter.js';
